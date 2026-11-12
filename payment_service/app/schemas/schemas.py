@@ -20,3 +20,8 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+# Модель для ответа токена
+class Token(BaseModel):
+    access_token: str
+    token_type: str

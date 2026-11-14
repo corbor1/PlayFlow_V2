@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Request, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.schemas import UserCreate, UserCreateResponse, Token
@@ -43,9 +43,18 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     summary="Регистрация пользователя (async, без хеширования)"
 )
 async def register_user(
+    request: Request,
     user_data: UserCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
     ):
+
+    log = request.state.logger.bind(
+        action="registration",
+        username=user_data.username,
+        email=user_data.email
+    )
+    log.info("registration_started")
+
     salt = bcrypt.gensalt()
     password_bytes = user_data.password.encode("utf-8")   # plain-text пароль
     hashed = bcrypt.hashpw(password_bytes, salt)
@@ -63,6 +72,12 @@ async def register_user(
     existing = result.scalars().first()
     if existing:
         field = "username" if existing.username == user_data.username else "email"
+        log = request.state.logger.bind(
+                action="already taken",
+                username=user_data.username,
+                email=user_data.email
+            )
+        log.error("User alredy taken")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field} already taken")
 
     new_user = User(
@@ -74,14 +89,31 @@ async def register_user(
     try:
         await db.commit()
         await db.refresh(new_user)
+        log.info(
+            "registration_completed",
+            status="success",
+            user_id=new_user.id
+        )
+        return new_user
+
     except IntegrityError:
         await db.rollback()
+        log.warning(
+            "registration_failed",
+            reason="duplicate_entry",
+            conflict_check="username_or_email" 
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username or email already taken"
         )
 
-    return new_user
+    except Exception as e:
+        log.error("registration_unexpected_error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    
+
+    
 
 # Эндпоинт для аутентификации (получения токена)
 @router.post("/auth/token", response_model=Token)

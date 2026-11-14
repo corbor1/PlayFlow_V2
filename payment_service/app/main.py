@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Приложение запускается: инициализируем ресурсы")
+    print("🌐 Server started at http://127.0.0.1:8000/docs")
     yield
     print("Приложение останавливается: освобождаем ресурсы")
 

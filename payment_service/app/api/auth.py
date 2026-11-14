@@ -10,6 +10,7 @@ import bcrypt
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 import jwt
+from sqlalchemy.exc import IntegrityError
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 
@@ -45,10 +46,17 @@ async def register_user(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db)
     ):
-    password = user_data.password_hash
     salt = bcrypt.gensalt()
-    password = password.encode("utf-8")
-    hashed = bcrypt.hashpw(password, salt)
+    password_bytes = user_data.password.encode("utf-8")   # plain-text пароль
+    hashed = bcrypt.hashpw(password_bytes, salt)
+    password_hash_str = hashed.decode("utf-8")           # строка для БД
+
+    new_user = User(
+        username=user_data.username,
+        email=user_data.email,
+        password_hash=password_hash_str,
+        # created_at/updated_at лучше через server_default в модели
+    )
     result = await db.execute(select(User).where(
         (User.username == user_data.username) | (User.email == user_data.email)
     ))
@@ -63,8 +71,16 @@ async def register_user(
         password_hash = hashed.decode("ascii")
     )
     db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
+    try:
+        await db.commit()
+        await db.refresh(new_user)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username or email already taken"
+        )
+
     return new_user
 
 # Эндпоинт для аутентификации (получения токена)

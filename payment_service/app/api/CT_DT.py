@@ -4,6 +4,13 @@ from app.core.db import engine
 
 router_db = APIRouter()
 
+@router_db.post ("/Drop and recreate")
+async def Drop_and_recreate ():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    return {"status": "tables recreate"}
+
 @router_db.post ("/drop_table")
 async def dr_table ():
     async with engine.begin() as conn:

@@ -4,12 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.schemas import UserCreate, UserCreateResponse, Token
 from app.core.db import get_db
 from app.models.models import User
-from app.integrations.OAuth2 import oauth2_scheme, create_access_token
+from app.integrations.OAuth2 import oauth2_scheme, create_access_token, verify_password
 from ..secret_key import SECRET_KEY, ALGORITHM
 import bcrypt
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 import jwt
+from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 
 router = APIRouter()
@@ -17,12 +18,22 @@ router = APIRouter()
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None or not User.is_active(username):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user")
-        return User(id=payload.get("user_id"), username=username, is_active=True)
+        username: str | None = payload.get("sub")
+        if username is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user",
+            )
+        return User(
+            id=payload.get("user_id"),
+            username=username,
+            is_active=True,
+        )
     except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
 
 @router.post(
     "/register",
@@ -58,16 +69,32 @@ async def register_user(
 
 # Эндпоинт для аутентификации (получения токена)
 @router.post("/auth/token", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    # Здесь должна быть логика проверки пользователя в базе данных
-    # Для примера создадим пользователя вручную
-    user = User(id=1, username=form_data.username, password_hash="hashed_password_here")  # В проде берём хэш из БД
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),   # 1) читает форму (username, password)
+    db: AsyncSession = Depends(get_db),                 # 2) даёт сессию БД
+):
+    # 3) Ищем пользователя по username в БД
+    result = await db.execute(select(User).where(User.username == form_data.username))
+    user = result.scalar_one_or_none()
+
+    # 4) Проверяем: пользователь существует? пароль верный?
+    if user is None or not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 5) Проверяем активность
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
-    access_token = create_access_token({
-        "sub": user.username,
-        "user_id": user.id
-    })
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Inactive user",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 6) Выдаём токен
+    access_token = create_access_token({"sub": user.username, "user_id": user.id})
     return Token(access_token=access_token, token_type="bearer")
 
 # Защищённый эндпоинт
